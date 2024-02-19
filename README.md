@@ -33,7 +33,7 @@ go install https://github.com/cybercdh/s3-warden@latest
 ```
 
 ### Usage
-To use s3-warden, simply provide the bucket name using the -b flag and optionally enable verbose output with -v:
+To use s3-warden, simply pipe your bucket name(s) via stdin and optionally enable verbose output with -v:
 
 ```sh
 Usage of s3-warden:
