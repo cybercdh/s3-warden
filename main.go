@@ -192,6 +192,9 @@ func putObjectACP(ctx context.Context, client *s3.Client, bucket string, key str
 		ACL:    "public-read",
 	})
 	if err != nil {
+		if verbose {
+			fmt.Printf("Failed to write object ACP to %s/%s\n", bucket, key)
+		}
 		return
 	}
 	if verbose {
@@ -219,7 +222,9 @@ func iterateBucket(ctx context.Context, client *s3.Client, bucket string) {
 		}
 
 		for _, object := range page.Contents {
-
+			if aggressive {
+				putObjectACP(ctx, client, bucket, *object.Key)
+			}
 			if verbose {
 				fmt.Printf("Checking ACP on %s/%s\n", bucket, *object.Key)
 			}
@@ -274,10 +279,6 @@ func iterateBucket(ctx context.Context, client *s3.Client, bucket string) {
 				} else {
 					fmt.Printf("Object with public read access found: %s/%s\n", bucket, *object.Key)
 				}
-			}
-
-			if aggressive {
-				putObjectACP(context.Background(), client, bucket, *object.Key)
 			}
 
 		}
