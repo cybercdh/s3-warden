@@ -112,7 +112,10 @@ func checkBucketACL(ctx context.Context, client *s3.Client, bucket string) {
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
-		fmt.Printf("Failed to get ACL for bucket %s\n", bucket)
+		if verbose {
+			fmt.Printf("Failed to get ACL for bucket %s\n", bucket)
+		}
+
 		return
 	}
 
@@ -188,7 +191,9 @@ func iterateBucket(ctx context.Context, client *s3.Client, bucket string) {
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			fmt.Printf("Failed to iterate page in bucket %s\n", bucket)
+			if verbose {
+				fmt.Printf("Failed to iterate page in bucket %s\n", bucket)
+			}
 			break
 		}
 
