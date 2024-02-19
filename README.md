@@ -36,7 +36,11 @@ go install https://github.com/cybercdh/s3-warden@latest
 To use s3-warden, simply provide the bucket name using the -b flag and optionally enable verbose output with -v:
 
 ```sh
-s3-warden -b your-bucket-name -v
+Usage of s3-warden:
+  -a	Be aggressive and attempt to write to the bucket/object policy
+  -c int
+    	Set the concurrency level, default 10 (default 10)
+  -v	See more info on attempts
 ```
 Note: Ensure that your AWS CLI is configured with the necessary permissions to fetch bucket and object ACLs.
 
