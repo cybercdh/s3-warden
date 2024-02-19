@@ -190,6 +190,9 @@ func iterateBucket(ctx context.Context, client *s3.Client, bucket string) {
 		Bucket: aws.String(bucket),
 	})
 
+	// if 5 issues are found, it's enough to stop and move on
+	issueCounter := 0
+
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
@@ -218,14 +221,42 @@ func iterateBucket(ctx context.Context, client *s3.Client, bucket string) {
 			}
 
 			// Check if the ACL includes permissions by unauthorized users
+			// Initialize flags to track found permissions
+			hasPublicRead := false
+			hasPublicWrite := false
+
 			for _, grant := range aclOutput.Grants {
 				if grant.Grantee.Type == types.TypeGroup && *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AllUsers" {
-					if verbose {
-						color.Green.Printf("Object with open permissions found: %s/%s\n", bucket, *object.Key)
-					} else {
-						fmt.Printf("Object with open permissions found: %s/%s\n", bucket, *object.Key)
+					switch grant.Permission {
+					case types.PermissionRead:
+						hasPublicRead = true
+					case types.PermissionWrite, types.PermissionFullControl:
+						hasPublicWrite = true
 					}
+				}
+			}
 
+			// Decide what to print based on the flags
+			if hasPublicWrite {
+				if verbose {
+					color.Red.Printf("Object with public write access found: %s/%s\n", bucket, *object.Key)
+				} else {
+					fmt.Printf("Object with public write access found: %s/%s\n", bucket, *object.Key)
+				}
+				issueCounter++
+				if issueCounter >= 5 {
+					if verbose {
+						fmt.Printf("Found 5 objects with public write permissions in %s, skipping the rest.\n", bucket)
+					}
+					return
+				}
+			}
+
+			if hasPublicRead {
+				if verbose {
+					color.Yellow.Printf("Object with public read access found: %s/%s\n", bucket, *object.Key)
+				} else {
+					fmt.Printf("Object with public read access found: %s/%s\n", bucket, *object.Key)
 				}
 			}
 
