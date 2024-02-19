@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -16,138 +18,194 @@ import (
 	"github.com/gookit/color"
 )
 
+var verbose bool
+var aggressive bool
+var concurrency int
+
 func main() {
-	var bucketName string
-	flag.StringVar(&bucketName, "b", "", "the bucket name to check")
 
-	var verbose bool
-	flag.BoolVar(&verbose, "v", false, "see more info on attempts")
-
-	var agressive bool
-	flag.BoolVar(&agressive, "a", false, "be aggressive and attempt to write to the bucket / object policy")
+	flag.BoolVar(&verbose, "v", false, "See more info on attempts")
+	flag.BoolVar(&aggressive, "a", false, "Be aggressive and attempt to write to the bucket/object policy")
+	flag.IntVar(&concurrency, "c", 10, "Set the concurrency level, default 10")
 
 	flag.Parse()
 
-	// Check if the bucketName was provided
-	if bucketName == "" {
-		fmt.Println("Error: the bucket name is required.")
-		flag.Usage()
+	ctx := context.TODO()
+	scanner := bufio.NewScanner(os.Stdin)
+
+	// Check if stdin is connected to a terminal or a pipe/file
+	fileInfo, _ := os.Stdin.Stat()
+	if (fileInfo.Mode() & os.ModeCharDevice) != 0 {
+		fmt.Println("No input detected. Please provide a list of bucket names via stdin.")
 		os.Exit(1)
 	}
 
-	ctx := context.TODO()
+	var wg sync.WaitGroup
+	bucketsChan := make(chan string)
 
-	/*
-		gets and uses the correct bucket region
-	*/
-	bucketRegion, err := getBucketRegion(bucketName)
-	if err != nil {
-		log.Fatalf("Unable to get the bucket region, %v", err)
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for bucketName := range bucketsChan {
+				processBucket(ctx, bucketName)
+			}
+		}()
 	}
 
+	// Read bucket names from stdin and send them to the channel
+	for scanner.Scan() {
+		bucketName := scanner.Text()
+		bucketsChan <- bucketName
+	}
+	close(bucketsChan)
+
+	wg.Wait()
+
+}
+
+func processBucket(ctx context.Context, bucketName string) {
+	cfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		log.Fatalf("Unable to load SDK config, %v", err)
+	}
+
+	bucketRegion, err := getBucketRegion(bucketName)
+	if err != nil {
+		fmt.Printf("Unable to get the bucket region, %v", err)
+		return
+	}
 	if verbose {
 		fmt.Printf("Bucket %s found in Region %s\n", bucketName, bucketRegion)
 	}
 
-	bucketCfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithRegion(string(bucketRegion)),
-	)
-	if err != nil {
-		log.Fatalf("Unable to load SDK config for bucket region, %v", err)
+	cfg.Region = bucketRegion
+	client := s3.NewFromConfig(cfg)
+
+	checkBucketACL(ctx, client, bucketName)
+
+	if aggressive {
+		testUpload(ctx, client, bucketName, "s3-warden-test.txt", strings.NewReader("s3-warden-test"))
+		putBucketACP(ctx, client, bucketName)
 	}
 
-	client := s3.NewFromConfig(bucketCfg)
+	iterateBucket(ctx, client, bucketName)
+}
 
-	/*
-		check the bucket ACL
-	*/
-	bucketAclOutput, err := client.GetBucketAcl(ctx, &s3.GetBucketAclInput{
-		Bucket: aws.String(bucketName),
+func getBucketRegion(bucket string) (string, error) {
+	url := fmt.Sprintf("https://%s.s3.amazonaws.com", bucket)
+	resp, err := http.Head(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	region := resp.Header.Get("x-amz-bucket-region")
+	if region == "" {
+		return "", fmt.Errorf("bucket region not found in headers")
+	}
+	return region, nil
+}
+
+func checkBucketACL(ctx context.Context, client *s3.Client, bucket string) {
+	aclOutput, err := client.GetBucketAcl(ctx, &s3.GetBucketAclInput{
+		Bucket: aws.String(bucket),
 	})
 	if err != nil {
-		if verbose {
-			fmt.Printf("Failed to get ACL for bucket %s\n", bucketName)
-		}
+		fmt.Printf("Failed to get ACL for bucket %s\n", bucket)
+		return
 	}
 
-	if bucketAclOutput != nil {
-		for _, grant := range bucketAclOutput.Grants {
-			if grant.Grantee.Type == types.TypeGroup && *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AllUsers" {
-				fmt.Printf("Bucket with open permissions found: %s", bucketName)
-			}
-		}
-
-	}
-
-	/*
-		attempts to upload a file to the bucket
-
-	*/
-	upload, err := testUpload(context.Background(), client, bucketName, "test-key.txt", strings.NewReader("This is a test"))
-	if err != nil {
-		if verbose {
-			fmt.Printf("Failed to upload to the bucket %s\n", bucketName)
-		}
-	}
-	if upload {
-		if verbose {
-			color.Green.Printf("Bucket %s allows uploads\n", bucketName)
-		} else {
-			fmt.Printf("Bucket %s allows uploads\n", bucketName)
-		}
-	}
-
-	/*
-		attempts to write to the ACP for the bucket
-	*/
-	if agressive {
-
-		writeACP, err := putBucketACP(context.Background(), client, bucketName)
-		if err != nil {
+	for _, grant := range aclOutput.Grants {
+		if grant.Grantee.Type == types.TypeGroup && *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AllUsers" {
 			if verbose {
-				fmt.Printf("Failed to write the bucket ACP %s\n", bucketName)
-			}
-		}
-		if writeACP {
-			if verbose {
-				color.Green.Printf("ACP for bucket %s changed!\n", bucketName)
+				color.Green.Printf("Public Access found on bucket %s\n", bucket)
 			} else {
-				fmt.Printf("ACP for bucket %s changed\n", bucketName)
+				fmt.Printf("Public Access found on bucket %s\n", bucket)
 			}
+			return
 		}
 	}
-	/*
-		iterates objects in the bucket and checks their ACLs
-	*/
 	if verbose {
-		fmt.Printf("Attempting to iterate contents in bucket %s\n", bucketName)
+		fmt.Printf("No public access found on bucket %s\n", bucket)
 	}
+}
 
+func testUpload(ctx context.Context, client *s3.Client, bucket string, key string, body *strings.Reader) {
+	_, err := client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+		Body:   body,
+	})
+	if err != nil {
+		return
+	}
+	if verbose {
+		color.Green.Printf("Upload allowed in bucket %s\n", bucket)
+	} else {
+		fmt.Printf("Upload allowed in bucket %s\n", bucket)
+	}
+	return
+}
+
+func putBucketACP(ctx context.Context, client *s3.Client, bucket string) {
+	_, err := client.PutBucketAcl(ctx, &s3.PutBucketAclInput{
+		Bucket:    aws.String(bucket),
+		GrantRead: aws.String("uri=http://acs.amazonaws.com/groups/global/AuthenticatedUsers"),
+	})
+	if err != nil {
+		return
+	}
+	if verbose {
+		color.Green.Printf("Writable Bucket ACP in bucket %s\n", bucket)
+	} else {
+		fmt.Printf("Writable Bucket ACP in bucket %s\n", bucket)
+	}
+	return
+}
+
+func putObjectACP(ctx context.Context, client *s3.Client, bucket string, key string) {
+	_, err := client.PutObjectAcl(ctx, &s3.PutObjectAclInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+		ACL:    "public-read",
+	})
+	if err != nil {
+		return
+	}
+	if verbose {
+		color.Green.Printf("Writable Bucket Object ACP %s/%s\n", bucket, key)
+	} else {
+		fmt.Printf("Writable Bucket Object ACP %s/%s\n", bucket, key)
+	}
+}
+
+func iterateBucket(ctx context.Context, client *s3.Client, bucket string) {
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucketName),
+		Bucket: aws.String(bucket),
 	})
 
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			fmt.Printf("Failed to iterate page in bucket %s\n", bucketName)
+			fmt.Printf("Failed to iterate page in bucket %s\n", bucket)
 			break
 		}
 
 		for _, object := range page.Contents {
 
 			if verbose {
-				fmt.Printf("Checking ACP on %s\n", *object.Key)
+				fmt.Printf("Checking ACP on %s/%s\n", bucket, *object.Key)
 			}
 
 			// Get the ACL for each object
 			aclOutput, err := client.GetObjectAcl(ctx, &s3.GetObjectAclInput{
-				Bucket: aws.String(bucketName),
+				Bucket: aws.String(bucket),
 				Key:    object.Key,
 			})
 			if err != nil {
 				if verbose {
-					fmt.Printf("Failed to get ACL for object %s", *object.Key)
+					fmt.Printf("Failed to get ACL for object %s/%s\n", bucket, *object.Key)
 				}
 				continue
 			}
@@ -156,90 +214,18 @@ func main() {
 			for _, grant := range aclOutput.Grants {
 				if grant.Grantee.Type == types.TypeGroup && *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AllUsers" {
 					if verbose {
-						color.Green.Printf("Object with open permissions found: %s/%s\n", bucketName, *object.Key)
+						color.Green.Printf("Object with open permissions found: %s/%s\n", bucket, *object.Key)
 					} else {
-						fmt.Printf("Object with open permissions found: %s/%s\n", bucketName, *object.Key)
+						fmt.Printf("Object with open permissions found: %s/%s\n", bucket, *object.Key)
 					}
 
 				}
 			}
 
-			if agressive {
-
-				objectACP, err := putObjectACP(context.Background(), client, bucketName, *object.Key)
-				if err != nil {
-					if verbose {
-						fmt.Printf("Failed to get update ACL for object %s\n", *object.Key)
-					}
-				}
-				if objectACP {
-					if verbose {
-						color.Green.Printf("ACP for bucket object %s changed!\n", *object.Key)
-					} else {
-						fmt.Printf("ACP for bucket object %s changed\n", *object.Key)
-					}
-				}
+			if aggressive {
+				putObjectACP(context.Background(), client, bucket, *object.Key)
 			}
 
 		}
 	}
-}
-
-func getBucketRegion(bucketName string) (string, error) {
-
-	url := fmt.Sprintf("https://%s.s3.amazonaws.com", bucketName)
-	bucketRegion := ""
-
-	// Perform a HEAD request to the bucket URL
-	resp, err := http.Head(url)
-	if err != nil {
-		fmt.Printf("Error making HEAD request: %v\n", err)
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	// Look for the x-amz-bucket-region header in the response
-	region := resp.Header.Get("x-amz-bucket-region")
-	if region == "" {
-		fmt.Println("Bucket region not found in headers")
-		return "", err
-	} else {
-		bucketRegion = region
-	}
-	return bucketRegion, nil
-}
-
-func testUpload(ctx context.Context, client *s3.Client, bucket, key string, body *strings.Reader) (bool, error) {
-	_, err := client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-		Body:   body,
-	})
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func putBucketACP(ctx context.Context, client *s3.Client, bucket string) (bool, error) {
-	_, err := client.PutBucketAcl(ctx, &s3.PutBucketAclInput{
-		Bucket:    aws.String(bucket),
-		GrantRead: aws.String("uri=http://acs.amazonaws.com/groups/global/AuthenticatedUsers"),
-	})
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func putObjectACP(ctx context.Context, client *s3.Client, bucket, key string) (bool, error) {
-	_, err := client.PutObjectAcl(ctx, &s3.PutObjectAclInput{
-		Bucket: aws.String(bucket),
-		Key:    aws.String(key),
-		ACL:    "public-read",
-	})
-	if err != nil {
-		return false, err
-	}
-	return true, nil
 }
