@@ -125,7 +125,6 @@ func checkBucketACL(ctx context.Context, client *s3.Client, bucket string) {
 		if verbose {
 			fmt.Printf("Failed to get ACL for bucket %s\n", bucket)
 		}
-
 		return
 	}
 
@@ -145,6 +144,9 @@ func checkBucketACL(ctx context.Context, client *s3.Client, bucket string) {
 }
 
 func testUpload(ctx context.Context, client *s3.Client, bucket string, key string, body *strings.Reader) {
+	if verbose {
+		fmt.Printf("Attempting to upload file to %s\n", bucket)
+	}
 	_, err := client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -162,6 +164,9 @@ func testUpload(ctx context.Context, client *s3.Client, bucket string, key strin
 }
 
 func putBucketACP(ctx context.Context, client *s3.Client, bucket string) {
+	if verbose {
+		fmt.Printf("Attempting to write bucket ACP to %s\n", bucket)
+	}
 	_, err := client.PutBucketAcl(ctx, &s3.PutBucketAclInput{
 		Bucket:    aws.String(bucket),
 		GrantRead: aws.String("uri=http://acs.amazonaws.com/groups/global/AuthenticatedUsers"),
@@ -178,6 +183,9 @@ func putBucketACP(ctx context.Context, client *s3.Client, bucket string) {
 }
 
 func putObjectACP(ctx context.Context, client *s3.Client, bucket string, key string) {
+	if verbose {
+		fmt.Printf("Attempting to write object ACP to %s/%s\n", bucket, key)
+	}
 	_, err := client.PutObjectAcl(ctx, &s3.PutObjectAclInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
