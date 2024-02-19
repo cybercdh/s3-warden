@@ -66,7 +66,7 @@ func main() {
 	})
 	if err != nil {
 		if verbose {
-			fmt.Printf("Failed to get ACL for bucket %s, %v\n", bucketName, err)
+			fmt.Printf("Failed to get ACL for bucket %s\n", bucketName)
 		}
 	}
 
@@ -146,7 +146,7 @@ func main() {
 			})
 			if err != nil {
 				if verbose {
-					fmt.Printf("Failed to get ACL for object %s, %v", *object.Key, err)
+					fmt.Printf("Failed to get ACL for object %s", *object.Key)
 				}
 				continue
 			}
