@@ -130,7 +130,7 @@ func main() {
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			log.Fatalf("Failed to get page, %v", err)
+			log.Fatalf("Failed to iterate page in bucket %s\n", bucketName)
 		}
 
 		for _, object := range page.Contents {
