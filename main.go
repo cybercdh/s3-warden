@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -96,7 +97,14 @@ func processBucket(ctx context.Context, bucketName string) {
 
 func getBucketRegion(bucket string) (string, error) {
 	url := fmt.Sprintf("https://%s.s3.amazonaws.com", bucket)
-	resp, err := http.Head(url)
+
+	// Create a custom HTTP client that ignores SSL certificate errors
+	customTransport := http.DefaultTransport.(*http.Transport).Clone()
+	customTransport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+
+	client := &http.Client{Transport: customTransport}
+
+	resp, err := client.Head(url)
 	if err != nil {
 		return "", err
 	}
