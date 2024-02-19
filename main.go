@@ -120,7 +120,7 @@ func main() {
 		iterates objects in the bucket and checks their ACLs
 	*/
 	if verbose {
-		fmt.Println("Iterating bucket contents...")
+		fmt.Printf("Attempting to iterate contents in bucket %s\n", bucketName)
 	}
 
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
@@ -130,7 +130,8 @@ func main() {
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			log.Fatalf("Failed to iterate page in bucket %s\n", bucketName)
+			fmt.Printf("Failed to iterate page in bucket %s\n", bucketName)
+			break
 		}
 
 		for _, object := range page.Contents {
