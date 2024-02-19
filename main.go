@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -22,6 +23,9 @@ func main() {
 	var verbose bool
 	flag.BoolVar(&verbose, "v", false, "see more info on attempts")
 
+	var agressive bool
+	flag.BoolVar(&agressive, "a", false, "be aggressive and attempt to write to the bucket / object policy")
+
 	flag.Parse()
 
 	// Check if the bucketName was provided
@@ -33,6 +37,9 @@ func main() {
 
 	ctx := context.TODO()
 
+	/*
+		gets and uses the correct bucket region
+	*/
 	bucketRegion, err := getBucketRegion(bucketName)
 	if err != nil {
 		log.Fatalf("Unable to get the bucket region, %v", err)
@@ -42,7 +49,6 @@ func main() {
 		fmt.Printf("Bucket %s found in Region %s\n", bucketName, bucketRegion)
 	}
 
-	// Create a new client with the bucket's region for further operations
 	bucketCfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion(string(bucketRegion)),
 	)
@@ -50,10 +56,11 @@ func main() {
 		log.Fatalf("Unable to load SDK config for bucket region, %v", err)
 	}
 
-	// Create an S3 service client with the right region
 	client := s3.NewFromConfig(bucketCfg)
 
-	// Check the bucket ACL for open permissions
+	/*
+		check the bucket ACL
+	*/
 	bucketAclOutput, err := client.GetBucketAcl(ctx, &s3.GetBucketAclInput{
 		Bucket: aws.String(bucketName),
 	})
@@ -64,24 +71,62 @@ func main() {
 	}
 
 	if bucketAclOutput != nil {
-		// Check if the bucket ACL includes permissions for public access
 		for _, grant := range bucketAclOutput.Grants {
 			if grant.Grantee.Type == types.TypeGroup && *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AllUsers" {
-				log.Printf("Bucket with open permissions found: %s", bucketName)
+				fmt.Printf("Bucket with open permissions found: %s", bucketName)
 			}
 		}
 
 	}
 
+	/*
+		attempts to upload a file to the bucket
+
+	*/
+	upload, err := testUpload(context.Background(), client, bucketName, "test-key.txt", strings.NewReader("This is a test"))
+	if err != nil {
+		if verbose {
+			fmt.Printf("Failed to upload to the bucket %s\n", bucketName)
+		}
+	}
+	if upload {
+		if verbose {
+			color.Green.Printf("Bucket %s allows uploads\n", bucketName)
+		} else {
+			fmt.Printf("Bucket %s allows uploads\n", bucketName)
+		}
+	}
+
+	/*
+		attempts to write to the ACP for the bucket
+	*/
+	if agressive {
+
+		writeACP, err := putBucketACP(context.Background(), client, bucketName)
+		if err != nil {
+			if verbose {
+				fmt.Printf("Failed to write the bucket ACP %s\n", bucketName)
+			}
+		}
+		if writeACP {
+			if verbose {
+				color.Green.Printf("ACP for bucket %s changed!\n", bucketName)
+			} else {
+				fmt.Printf("ACP for bucket %s changed\n", bucketName)
+			}
+		}
+	}
+	/*
+		iterates objects in the bucket and checks their ACLs
+	*/
 	if verbose {
 		fmt.Println("Iterating bucket contents...")
 	}
-	// List all objects in the bucket if bucket ACL check passes your criteria
+
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucketName),
 	})
 
-	// Iterate through the object list
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
@@ -93,6 +138,7 @@ func main() {
 			if verbose {
 				fmt.Printf("Checking ACP on %s\n", *object.Key)
 			}
+
 			// Get the ACL for each object
 			aclOutput, err := client.GetObjectAcl(ctx, &s3.GetObjectAclInput{
 				Bucket: aws.String(bucketName),
@@ -100,12 +146,12 @@ func main() {
 			})
 			if err != nil {
 				if verbose {
-					log.Printf("Failed to get ACL for object %s, %v", *object.Key, err)
+					fmt.Printf("Failed to get ACL for object %s, %v", *object.Key, err)
 				}
 				continue
 			}
 
-			// Check if the ACL includes permissions for overwrite by unauthorized users
+			// Check if the ACL includes permissions by unauthorized users
 			for _, grant := range aclOutput.Grants {
 				if grant.Grantee.Type == types.TypeGroup && *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AllUsers" {
 					if verbose {
@@ -116,6 +162,24 @@ func main() {
 
 				}
 			}
+
+			if agressive {
+
+				objectACP, err := putObjectACP(context.Background(), client, bucketName, *object.Key)
+				if err != nil {
+					if verbose {
+						fmt.Printf("Failed to get update ACL for object %s\n", *object.Key)
+					}
+				}
+				if objectACP {
+					if verbose {
+						color.Green.Printf("ACP for bucket object %s changed!\n", *object.Key)
+					} else {
+						fmt.Printf("ACP for bucket object %s changed\n", *object.Key)
+					}
+				}
+			}
+
 		}
 	}
 }
@@ -142,4 +206,39 @@ func getBucketRegion(bucketName string) (string, error) {
 		bucketRegion = region
 	}
 	return bucketRegion, nil
+}
+
+func testUpload(ctx context.Context, client *s3.Client, bucket, key string, body *strings.Reader) (bool, error) {
+	_, err := client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+		Body:   body,
+	})
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func putBucketACP(ctx context.Context, client *s3.Client, bucket string) (bool, error) {
+	_, err := client.PutBucketAcl(ctx, &s3.PutBucketAclInput{
+		Bucket:    aws.String(bucket),
+		GrantRead: aws.String("uri=http://acs.amazonaws.com/groups/global/AuthenticatedUsers"),
+	})
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func putObjectACP(ctx context.Context, client *s3.Client, bucket, key string) (bool, error) {
+	_, err := client.PutObjectAcl(ctx, &s3.PutObjectAclInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+		ACL:    "public-read",
+	})
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
