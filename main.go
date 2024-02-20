@@ -21,11 +21,13 @@ import (
 
 var verbose bool
 var aggressive bool
+var quick bool
 var concurrency int
 
 func main() {
 
 	flag.BoolVar(&verbose, "v", false, "See more info on attempts")
+	flag.BoolVar(&quick, "q", false, "See more info on attempts")
 	flag.BoolVar(&aggressive, "a", false, "Be aggressive and attempt to write to the bucket/object policy")
 	flag.IntVar(&concurrency, "c", 10, "Set the concurrency level, default 10")
 
@@ -86,6 +88,11 @@ func processBucket(ctx context.Context, bucketName string) {
 	client := s3.NewFromConfig(cfg)
 
 	checkBucketACL(ctx, client, bucketName)
+	checkOpenListing(ctx, client, bucketName)
+
+	if quick {
+		return
+	}
 
 	if aggressive {
 		testUpload(ctx, client, bucketName, "s3-warden-test.txt", strings.NewReader("s3-warden-test"))
@@ -117,6 +124,25 @@ func getBucketRegion(bucket string) (string, error) {
 	return region, nil
 }
 
+func checkOpenListing(ctx context.Context, client *s3.Client, bucket string) {
+	_, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
+		Bucket:  aws.String(bucket),
+		MaxKeys: aws.Int32(1),
+	})
+
+	if err != nil {
+		if verbose {
+			fmt.Printf("No open directory listing found in: %s\n", bucket)
+		}
+	} else {
+		if verbose {
+			color.Yellow.Printf("Possible open directory listing in %s\n", bucket)
+		} else {
+			fmt.Printf("Possible open directory listing in %s\n", bucket)
+		}
+	}
+}
+
 func checkBucketACL(ctx context.Context, client *s3.Client, bucket string) {
 	aclOutput, err := client.GetBucketAcl(ctx, &s3.GetBucketAclInput{
 		Bucket: aws.String(bucket),
@@ -128,19 +154,42 @@ func checkBucketACL(ctx context.Context, client *s3.Client, bucket string) {
 		return
 	}
 
+	hasPublicRead := false
+	hasPublicWrite := false
+
 	for _, grant := range aclOutput.Grants {
 		if grant.Grantee.Type == types.TypeGroup && *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AllUsers" {
-			if verbose {
-				color.Green.Printf("Public Access found on bucket %s\n", bucket)
-			} else {
-				fmt.Printf("Public Access found on bucket %s\n", bucket)
+			switch grant.Permission {
+			case types.PermissionRead:
+				hasPublicRead = true
+			case types.PermissionWrite, types.PermissionFullControl:
+				hasPublicWrite = true
 			}
-			return
 		}
 	}
-	if verbose {
+
+	// Decide what to print based on the flags
+	if hasPublicWrite {
+		if verbose {
+			color.Red.Printf("Bucket with public write access found: %s\n", bucket)
+		} else {
+			fmt.Printf("Bucket with public write access found: %s\n", bucket)
+		}
+	}
+
+	if hasPublicRead {
+		if verbose {
+			color.Yellow.Printf("Bucket with public read access found: %s\n", bucket)
+		} else {
+			fmt.Printf("Bucket with public read access found: %s\n", bucket)
+		}
+	}
+
+	if verbose && !hasPublicRead && !hasPublicWrite {
 		fmt.Printf("No public access found on bucket %s\n", bucket)
 	}
+
+	return
 }
 
 func testUpload(ctx context.Context, client *s3.Client, bucket string, key string, body *strings.Reader) {
