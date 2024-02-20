@@ -76,7 +76,7 @@ func processBucket(ctx context.Context, bucketName string) {
 	bucketRegion, err := getBucketRegion(bucketName)
 	if err != nil {
 		if verbose {
-			fmt.Printf("Unable to get the bucket region, %v", err)
+			fmt.Printf("Unable to get the region for %s\n", bucketName)
 		}
 		return
 	}
