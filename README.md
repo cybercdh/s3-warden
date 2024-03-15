@@ -39,10 +39,11 @@ To use s3-warden, simply pipe your bucket name(s) via stdin and optionally enabl
 echo bucket-name | s3-warden -h
 
 Usage of s3-warden:
-  -a	Be aggressive and attempt to write to the bucket/object policy
+  -a  Be aggressive and attempt to write to the bucket/object policy
   -c int
-    	Set the concurrency level, default 10 (default 10)
-  -v	See more info on attempts
+      Set the concurrency level (default 10)
+  -q  Quick mode just checks the bucket ACL and for a directory listing. No enumeration of objects
+  -v  See more info on attempts
 ```
 Note: Ensure that your AWS CLI is configured with the necessary permissions to fetch bucket and object ACLs.
 

@@ -27,7 +27,7 @@ var concurrency int
 func main() {
 
 	flag.BoolVar(&verbose, "v", false, "See more info on attempts")
-	flag.BoolVar(&quick, "q", false, "See more info on attempts")
+	flag.BoolVar(&quick, "q", false, "Quick mode just checks the bucket ACL and for a directory listing. No enumeration of objects")
 	flag.BoolVar(&aggressive, "a", false, "Be aggressive and attempt to write to the bucket/object policy")
 	flag.IntVar(&concurrency, "c", 10, "Set the concurrency level, default 10")
 
